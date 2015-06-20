@@ -1,32 +1,24 @@
+#!/usr/bin/env python
+
 import config
-import pyinotify
-import os
+
 import pika
+import json
 
-class LogMonitor(pyinotify.ProcessEvent):
+from pyzabbix import ZabbixAPI
 
-    def __init__(self, filename, channel):
-        self.fh = open(filename, 'r')
-        self.channel = channel
-        file_size = os.stat(filename).st_size
-        self.fh.seek(file_size)
-
-    def process_IN_MODIFY(self, event):
-        line = self.fh.readline()
-        self.channel.basic_publish(exchange='logs', routing_key='', body=line)
-
-    # TODO - should handle logrotate, deletion, creation of a new file
 
 if __name__ == "__main__":
-    rabbit_connection = pika.BlockingConnection(pika.ConnectionParameters(host=config.rabbitmq['host']))
+    message ={}
+    zapi = ZabbixAPI("http://ni2.codeabovelab.com:8080/zabbix")
+    zapi.login("admin", "zabbix")
+    print "Connected to Zabbix API Version %s" % zapi.api_version()
+
+    for host in zapi.host.get(output="extend"):
+        message[host['hostid']]=zapi.item.get(hostid=host['hostid'])
+
+    #print json.dumps(message, indent=2)
+    rabbit_connection = pika.BlockingConnection(pika.URLParameters('amqp://admin:opentsp@ni1.codeabovelab.com:5672/%2F'))
     channel = rabbit_connection.channel()
-    channel.exchange_declare(exchange='logs', type='fanout')
-
-    wm = pyinotify.WatchManager()
-
-    mask = pyinotify.IN_MODIFY
-
-    handler = LogMonitor(config.log_file, channel)
-    notifier = pyinotify.Notifier(wm, handler)
-    wdd = wm.add_watch(config.log_file, mask, rec=True)
-    notifier.loop()
+    channel.exchange_declare(exchange='opentsp.log', type='fanout')
+    channel.basic_publish(exchange='opentsp.log', routing_key='', body=json.dumps(message, indent=2))
